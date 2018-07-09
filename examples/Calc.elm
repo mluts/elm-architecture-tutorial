@@ -4,6 +4,7 @@ import Html exposing (..)
 import Html.Attributes exposing (..)
 import Html.Events exposing (..)
 import Maybe exposing (Maybe)
+import Regex
 
 type alias Stack n = List n
 
@@ -21,40 +22,11 @@ type Token = TFloat Float | TChar Char
 
 type alias Model =
   {
-    currentNumber : Maybe Float,
-    tokens : List Token
+    input : String
   }
 
 type Msg =
-  Digit Char | Op Char | Cmd Char
-
-
-charIntoNumber : Char -> Float -> Maybe Float
-charIntoNumber c currentNumber =
-  let newnumberStr = (toString currentNumber) ++ (String.fromChar c)
-  in
-      case String.toFloat newnumberStr of
-        Ok newnumber -> Just newnumber
-        _ -> Nothing
-
-updateCurrentNumber : Char -> Model -> Model
-updateCurrentNumber c model =
-  case model.currentNumber of
-    Just n ->
-      { model | currentNumber = (charIntoNumber c n) }
-    Nothing ->
-      case String.fromChar c |> String.toFloat of
-        Ok n ->
-          { model | currentNumber = Just n }
-        _ ->
-          model
-
-precedenceOf : Char -> Int
-precedenceOf c =
-  case c of 
-    '*' -> 2
-    '/' -> 2
-    _ -> 0
+  Input String
 
 apply : Char -> Float -> Float -> Float
 apply op op1 op2 =
@@ -67,20 +39,45 @@ apply op op1 op2 =
 
 parseInfix : List Token -> List Token
 parseInfix tokens =
-  let parseToken token acc =
-        case token of
-          TFloat n ->
-            { acc | outputQueue = acc.outputQueue ++ [token] }
-          TChar op ->
-            case stackPop acc.operatorStack of
-              (Just op2, stack) ->
-                if (precedenceOf op2) >= precedenceOf op then
-                  parseToken token { acc | operatorStack = stack, outputQueue = acc.outputQueue ++ [TChar op2] }
-                else
-                  { acc | operatorStack = stackPush acc.operatorStack op }
-              (Nothing, _) ->
+  let
+    precedenceOf : Char -> Int
+    precedenceOf c =
+      case c of 
+        '*' -> 2
+        '/' -> 2
+        _ -> 0
+
+    isOperator : Char -> Bool
+    isOperator c =
+      String.toList "+-*/" |> List.member c
+
+    parseToken token acc =
+      case token of
+        TFloat n ->
+          { acc | outputQueue = acc.outputQueue ++ [token] }
+        TChar '(' ->
+          { acc | operatorStack = stackPush acc.operatorStack '(' }
+        TChar ')' ->
+          case stackPop acc.operatorStack of
+            (Just '(', stack) ->
+              { acc | operatorStack = stack }
+            (Just op2, stack) ->
+              parseToken token { acc | operatorStack = stack, outputQueue = acc.outputQueue ++ [TChar op2] }
+            (Nothing, _) ->
+              acc
+
+        TChar op ->
+          case stackPop acc.operatorStack of
+            (Just op2, stack) ->
+              if (precedenceOf op2) >= precedenceOf op && op2 /= '(' then
+                parseToken token { acc | operatorStack = stack, outputQueue = acc.outputQueue ++ [TChar op2] }
+              else
                 { acc | operatorStack = stackPush acc.operatorStack op }
-      parsedTokens = List.foldl parseToken { outputQueue = [], operatorStack = [] } tokens
+            (Nothing, _) ->
+              { acc | operatorStack = stackPush acc.operatorStack op }
+
+    parsedTokens =
+      List.foldl parseToken { outputQueue = [], operatorStack = [] } tokens
   in
       parsedTokens.outputQueue ++ (List.map TChar parsedTokens.operatorStack)
 
@@ -112,32 +109,16 @@ eval outputQueue =
 
 initialModel : Model
 initialModel =
-  { tokens = [], currentNumber = Nothing }
+  { input = "" }
 
 update : Msg -> Model -> Model
 update msg model =
   case msg of
-    Digit c ->
-      updateCurrentNumber c model
-    Op c ->
-      case model.currentNumber of
-        Just n ->
-          { model | tokens = model.tokens ++ [TFloat n, TChar c], currentNumber = Nothing }
-        Nothing ->
-          { model | tokens = model.tokens ++ [TChar c] }
-    Cmd 'D' ->
-      case (model.currentNumber, List.isEmpty model.tokens) of
-        (Just n, _) ->
-          { model | currentNumber = Nothing }
-        (Nothing, False) ->
-          { model | tokens = List.take (List.length model.tokens - 1) model.tokens }
-        _ -> model
-    Cmd 'C' -> initialModel
-    _ -> model
+    Input content -> { model | input = content }
 
 resultInput : String -> Html Msg
 resultInput str =
-  input [ disabled True, value str ] []
+  input [ disabled False, value str, onInput Input ] []
 
 btn : String -> Msg -> Html Msg
 btn label msg =
@@ -155,31 +136,54 @@ tokenToString token =
 view : Model -> Html Msg
 view model =
   let
-      tokens =
-        case model.currentNumber of
-          Just n -> model.tokens ++ [TFloat n]
-          Nothing -> model.tokens
-
-      tokensStr = List.map tokenToString tokens |> String.join ""
-
       result =
-        case parseInfix tokens |> eval of
-          Just n -> toString n
-          Nothing -> ""
+        model.input |> parseString |> parseInfix |> eval
+
+      resultStr =
+        case result of
+          Just n -> n |> toString
+          Nothing -> "0"
   in
       div
       []
       [
-        resultInput tokensStr
-      , br, resultInput result
-      , br, btn "1" (Digit '1'), btn "2" (Digit '2'), btn "3" (Digit '3')
-      , br, btn "4" (Digit '4'), btn "5" (Digit '5'), btn "6" (Digit '6')
-      , br, btn "7" (Digit '7'), btn "8" (Digit '8'), btn "9" (Digit '9')
-      , br, btn "0" (Digit '0')
-      , br, btn "+" (Op '+'), btn "-" (Op '-')
-      , br, btn "*" (Op '*'), btn "/" (Op '/')
-      , br, btn "C" (Cmd 'C'), btn "Del" (Cmd 'D')
+        resultInput model.input
+      , br, resultInput resultStr
       ]
+
+parseString : String -> List Token
+parseString str =
+  let
+      elRegexStr =
+        "(\\d+(?:\\.\\d+)?|\\s+|[*)(/]|\\-|\\+)"
+
+      stripWhitespace : String -> String
+      stripWhitespace str =
+        let
+            regex = Regex.regex "\\s+"
+            strip m = ""
+        in
+            Regex.replace Regex.All regex strip str
+
+      elRegex =
+        Regex.regex elRegexStr
+
+      findTokens =
+        Regex.find Regex.All elRegex
+
+      tokenize : String -> Maybe Token
+      tokenize str =
+        case String.toFloat str of
+          Ok n -> Just (TFloat n)
+          _ ->
+            case String.toList str |> List.head of
+              Just c -> Just (TChar c)
+              Nothing -> Nothing
+  in
+     findTokens str
+     |> List.map (\m -> stripWhitespace m.match)
+     |> List.filter (String.isEmpty >> not)
+     |> List.filterMap tokenize
 
 main =
   Html.beginnerProgram
